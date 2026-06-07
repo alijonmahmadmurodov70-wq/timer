@@ -231,42 +231,46 @@ async def telefon_qabul(msg: Message, state: FSMContext):
     if not telefon.startswith("+"):
         return await msg.answer("❌ Format: +998901234567")
 
-    await msg.answer("⏳ Ulanilmoqda...")
-
-    # Barcha DC larda urinib ko'ramiz
-    for dc_id in [1, 2, 3, 4, 5]:
-        client = TelegramClient(
-            StringSession(), API_ID, API_HASH,
-            device_model="Samsung Galaxy S23",
-            system_version="Android 13",
-            app_version="10.0.1",
+    await msg.answer("⏳ Kod yuborilmoqda...")
+    client = TelegramClient(
+        StringSession(), API_ID, API_HASH,
+        device_model="Samsung Galaxy S23",
+        system_version="Android 13",
+        app_version="10.0.1",
+        connection_retries=5,
+        retry_delay=2,
+        request_retries=5,
+    )
+    try:
+        await client.connect()
+        natija = await client.send_code_request(telefon)
+        uid = msg.from_user.id
+        if uid not in users:
+            users[uid] = {"shablon": 1}
+        users[uid]["client"]  = client
+        users[uid]["telefon"] = telefon
+        users[uid]["hash"]    = natija.phone_code_hash
+        await state.set_state(Login.kod)
+        # Kod qayerga ketishini aniqlaymiz
+        tur = natija.type.__class__.__name__
+        if "Sms" in tur:
+            qaerga = "📱 SMS ga"
+        elif "App" in tur:
+            qaerga = "📲 Telegram ilovaga"
+        else:
+            qaerga = "📨"
+        await msg.answer("{} kod yuborildi! Kodni kiriting:".format(qaerga))
+    except FloodWaitError as e:
+        await client.disconnect()
+        await state.clear()
+        d = e.seconds // 60 + 1
+        await msg.answer("⏳ FloodWait: {} daqiqa kuting.".format(d))
+    except Exception as e:
+        await client.disconnect()
+        await state.clear()
+        await msg.answer(
+            "❌ Xato: {}\n\nAPI_ID va API_HASH to'g'rimi?".format(str(e)[:150])
         )
-        try:
-            await client.connect()
-            # DC ni to'g'ri o'rnatish
-            await client._switch_dc(dc_id)
-            natija = await client.send_code_request(telefon)
-            uid = msg.from_user.id
-            if uid not in users:
-                users[uid] = {"shablon": 1}
-            users[uid]["client"]  = client
-            users[uid]["telefon"] = telefon
-            users[uid]["hash"]    = natija.phone_code_hash
-            await state.set_state(Login.kod)
-            await msg.answer("📨 Kod yuborildi (DC{})! Kodni kiriting:".format(dc_id))
-            break
-        except FloodWaitError as e:
-            await client.disconnect()
-            await state.clear()
-            d = e.seconds // 60 + 1
-            await msg.answer("⏳ FloodWait: {} daqiqa kuting.".format(d))
-            return
-        except Exception as e:
-            await client.disconnect()
-            if dc_id == 5:
-                await state.clear()
-                await msg.answer("❌ Ulanib bo'lmadi: {}\n\nAPI_ID va API_HASH ni tekshiring.".format(str(e)[:100]))
-            continue
 
 
 @dp.message(Login.kod)
