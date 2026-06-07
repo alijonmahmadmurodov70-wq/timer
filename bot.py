@@ -31,7 +31,10 @@ TZ_OFFSET = int(os.getenv("TIMEZONE", "5"))
 bot = Bot(token=BOT_TOKEN)
 dp  = Dispatcher(storage=MemoryStorage())
 
-# uid -> {client, task, shablon, telefon, hash}
+# uid -> {
+#   "accounts": [{"client": ..., "nom": ..., "telefon": ..., "task": ..., "shablon": 1}],
+#   "hash": ..., "telefon": ..., "shablon": 1, "client": ...  (login jarayoni uchun)
+# }
 users: dict[int, dict] = {}
 
 
@@ -105,43 +108,54 @@ def soat_formatlash(shablon_idx: int) -> str:
 # ── Klaviatura ─────────────────────────────────────────────────────────────────
 
 def ikb(rows):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=t, callback_data=d) for t, d in row]
-        for row in rows
-    ])
+    keyboard = []
+    for row in rows:
+        kb_row = []
+        for item in row:
+            if isinstance(item, tuple):
+                kb_row.append(InlineKeyboardButton(text=item[0], callback_data=item[1]))
+            else:
+                kb_row.append(item)
+        keyboard.append(kb_row)
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
 def bosh_kb(uid: int) -> InlineKeyboardMarkup:
-    aktiv = (uid in users
-             and users[uid].get("task")
-             and not users[uid]["task"].done())
-    if aktiv:
-        shablon = users[uid].get("shablon", 1)
-        nom     = SHABLONLAR[shablon - 1][1]
-        return ikb([
-            [("⏹ To'xtatish", "stop")],
-            [("🎨 Shablon: " + nom, "shablon_menu")],
-        ])
+    accounts  = users.get(uid, {}).get("accounts", [])
+    aktiv_son = sum(1 for a in accounts if a.get("task") and not a["task"].done())
+    rows = [
+        [("➕ Akkount qo'shish", "start_vc")],
+    ]
+    if accounts:
+        rows.append([("📋 Akkountlar", "akk_royxat")])
+    if aktiv_son > 0:
+        rows.append([("⏹ Hammasini to'xtatish", "stop_all")])
+        rows.append([("🎨 Shablon o'zgartirish", "shablon_menu")])
     else:
-        return ikb([
-            [("▶️ Boshlash", "start_vc")],
-            [("🎨 Shablon tanlash", "shablon_menu")],
-        ])
+        if accounts:
+            rows.append([("▶️ Hammasini boshlash", "start_all")])
+        rows.append([("🎨 Shablon tanlash", "shablon_menu")])
+    return ikb(rows)
 
 
 def shablon_kb() -> InlineKeyboardMarkup:
-    now = hozirgi_vaqt()
-    h, m, s = now.hour, now.minute, now.second
-    rows = []
+    keyboard = []
     for i in range(0, 10, 2):
         s1 = SHABLONLAR[i]
         s2 = SHABLONLAR[i + 1]
-        rows.append([
-            (s1[1] + ": " + soat_formatlash(i + 1), "sh:" + s1[0]),
-            (s2[1] + ": " + soat_formatlash(i + 2), "sh:" + s2[0]),
-        ])
-    rows.append([("⬅️ Orqaga", "back")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+        row = [
+            InlineKeyboardButton(
+                text=s1[1] + ": " + soat_formatlash(i + 1),
+                callback_data="sh:" + s1[0]
+            ),
+            InlineKeyboardButton(
+                text=s2[1] + ": " + soat_formatlash(i + 2),
+                callback_data="sh:" + s2[0]
+            ),
+        ]
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="back")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
 # ── /start ─────────────────────────────────────────────────────────────────────
@@ -149,28 +163,24 @@ def shablon_kb() -> InlineKeyboardMarkup:
 @dp.message(Command("start"))
 async def cmd_start(msg: Message, state: FSMContext):
     await state.clear()
-    uid   = msg.from_user.id
-    aktiv = (uid in users
-             and users[uid].get("task")
-             and not users[uid]["task"].done())
+    uid = msg.from_user.id
+    if uid not in users:
+        users[uid] = {"accounts": [], "shablon": 1}
 
-    if aktiv:
-        shablon = users[uid].get("shablon", 1)
-        nom     = SHABLONLAR[shablon - 1][1]
-        namuna  = soat_formatlash(shablon)
-        matn    = (
-            "⏰ <b>ClockBot</b>\n\n"
-            "✅ Ishlayapti!\n"
-            "Shablon: <b>{}</b>\n"
-            "Hozir: <code>{}</code>"
-        ).format(nom, namuna)
+    accounts = users[uid].get("accounts", [])
+    aktiv_son = sum(1 for a in accounts if a.get("task") and not a["task"].done())
+
+    matn = "⏰ <b>ClockBot</b>\n\n"
+    if accounts:
+        matn += "<b>Akkountlar ({} ta, {} aktiv):</b>\n".format(len(accounts), aktiv_son)
+        for i, a in enumerate(accounts):
+            aktiv = a.get("task") and not a["task"].done()
+            belgi = "✅" if aktiv else "⏸"
+            matn += "{}. {} {}\n".format(i+1, belgi, a.get("nom") or a.get("telefon",""))
+        matn += "\n"
     else:
-        matn = (
-            "⏰ <b>ClockBot</b>\n\n"
-            "Bio'ingizga real-time soat qo'ying!\n"
-            "Har soniyada yangilanib turadi 🔄\n\n"
-            "Boshlash uchun ▶️ bosing."
-        )
+        matn += "Hech qanday akkount ulanmagan.\nBio'ingizga real-time soat qo'ying! 🔄\n\n"
+
     await msg.answer(matn, reply_markup=bosh_kb(uid), parse_mode="HTML")
 
 
@@ -232,58 +242,34 @@ async def telefon_qabul(msg: Message, state: FSMContext):
         return await msg.answer("❌ Format: +998901234567")
 
     await msg.answer("⏳ Kod yuborilmoqda...")
-    # MTProxy — Render serveridan Telegram ga ulanish uchun
-    # Bir nechta ishonchli MTProxy serverlar
-    PROXIES = [
-        ("mtproto", "mtproxy.co", 443, "secret"),
-        None,  # Proxy-siz ham urinib ko'ramiz
-    ]
 
-    client = None
-    for proxy in PROXIES:
-        try:
-            if proxy:
-                from telethon.network.connection import ConnectionTcpMTProxyRandomizedIntermediate
-                c = TelegramClient(
-                    StringSession(), API_ID, API_HASH,
-                    connection=ConnectionTcpMTProxyRandomizedIntermediate,
-                    proxy=proxy,
-                    device_model="Samsung Galaxy S23",
-                    system_version="Android 13",
-                    app_version="10.0.1",
-                    connection_retries=3,
-                )
-            else:
-                c = TelegramClient(
-                    StringSession(), API_ID, API_HASH,
-                    device_model="Samsung Galaxy S23",
-                    system_version="Android 13",
-                    app_version="10.0.1",
-                    connection_retries=3,
-                )
-            await c.connect()
-            client = c
-            break
-        except Exception:
-            try: await c.disconnect()
-            except: pass
-            continue
+    # O'zbekiston +998 → DC5, boshqalar → DC1
+    dc_id = 5 if telefon.startswith("+998") else 1
 
-    if not client:
-        await state.clear()
-        await msg.answer("❌ Ulanib bo'lmadi. Keyinroq urinib ko'ring.")
-        return
+    client = TelegramClient(
+        StringSession(), API_ID, API_HASH,
+        device_model="Samsung Galaxy S23",
+        system_version="Android 13",
+        app_version="10.0.1",
+        connection_retries=5,
+        retry_delay=3,
+    )
     try:
         await client.connect()
+        # To'g'ri DC ga o'tish
+        await client._switch_dc(dc_id)
         natija = await client.send_code_request(telefon)
+
         uid = msg.from_user.id
         if uid not in users:
-            users[uid] = {"shablon": 1}
-        users[uid]["client"]  = client
-        users[uid]["telefon"] = telefon
-        users[uid]["hash"]    = natija.phone_code_hash
+            users[uid] = {"accounts": [], "shablon": 1}
+        # Login jarayoni uchun vaqtincha saqlaymiz
+        users[uid]["_client"]  = client
+        users[uid]["_telefon"] = telefon
+        users[uid]["_hash"]    = natija.phone_code_hash
+
         await state.set_state(Login.kod)
-        # Kod qayerga ketishini aniqlaymiz
+
         tur = natija.type.__class__.__name__
         if "Sms" in tur:
             qaerga = "📱 SMS ga"
@@ -292,29 +278,29 @@ async def telefon_qabul(msg: Message, state: FSMContext):
         else:
             qaerga = "📨"
         await msg.answer("{} kod yuborildi! Kodni kiriting:".format(qaerga))
+
     except FloodWaitError as e:
-        await client.disconnect()
+        try: await client.disconnect()
+        except: pass
         await state.clear()
         d = e.seconds // 60 + 1
         await msg.answer("⏳ FloodWait: {} daqiqa kuting.".format(d))
     except Exception as e:
-        await client.disconnect()
+        try: await client.disconnect()
+        except: pass
         await state.clear()
-        await msg.answer(
-            "❌ Xato: {}\n\nAPI_ID va API_HASH to'g'rimi?".format(str(e)[:150])
-        )
+        await msg.answer("❌ Xato: {}".format(str(e)[:200]))
 
 
-@dp.message(Login.kod)
 async def kod_qabul(msg: Message, state: FSMContext):
     uid    = msg.from_user.id
     ma     = users.get(uid, {})
-    client = ma.get("client")
+    client = ma.get("_client")
     if not client:
         await state.clear()
         return await msg.answer("❌ Sessiya topilmadi. /start bosing.")
     try:
-        await client.sign_in(ma["telefon"], msg.text.strip(), phone_code_hash=ma["hash"])
+        await client.sign_in(ma["_telefon"], msg.text.strip(), phone_code_hash=ma["_hash"])
         await _login_ok(msg, state, uid, client)
     except SessionPasswordNeededError:
         await state.set_state(Login.parol)
@@ -327,7 +313,7 @@ async def kod_qabul(msg: Message, state: FSMContext):
 @dp.message(Login.parol)
 async def parol_qabul(msg: Message, state: FSMContext):
     uid    = msg.from_user.id
-    client = users.get(uid, {}).get("client")
+    client = users.get(uid, {}).get("_client")
     if not client:
         await state.clear()
         return await msg.answer("❌ Sessiya topilmadi.")
@@ -340,11 +326,36 @@ async def parol_qabul(msg: Message, state: FSMContext):
 
 
 async def _login_ok(msg: Message, state: FSMContext, uid: int, client: TelegramClient):
-    me = await client.get_me()
-    users[uid]["client"] = client
+    me  = await client.get_me()
+    nom = me.first_name or me.username or str(me.id)
+    if uid not in users:
+        users[uid] = {"accounts": [], "shablon": 1}
+    if "accounts" not in users[uid]:
+        users[uid]["accounts"] = []
+
+    # Yangi akkount qo'shish
+    akk = {
+        "client":  client,
+        "telefon": me.phone or "",
+        "nom":     nom,
+        "shablon": users[uid].get("shablon", 1),
+        "task":    None,
+    }
+    users[uid]["accounts"].append(akk)
+
+    # Login vaqtinchalik ma'lumotlarini tozalash
+    users[uid].pop("_client", None)
+    users[uid].pop("_telefon", None)
+    users[uid].pop("_hash", None)
+
     await state.clear()
+
+    # Darhol boshlash
+    akk_idx = len(users[uid]["accounts"]) - 1
+    await _task_boshlash_akk(uid, akk_idx)
+
     await msg.answer(
-        "✅ Ulandi: @{}\n\nShablon tanlang:".format(me.username or me.first_name),
+        "✅ @{} ulandi va boshlandi!\n\nShablon tanlang:".format(me.username or nom),
         reply_markup=shablon_kb()
     )
 
@@ -399,40 +410,39 @@ async def shablon_tanlash(cb: CallbackQuery):
 
 # ── To'xtatish ─────────────────────────────────────────────────────────────────
 
-@dp.callback_query(F.data == "stop")
-async def toxtatish(cb: CallbackQuery):
-    uid  = cb.from_user.id
-    task = users.get(uid, {}).get("task")
-    if task and not task.done():
-        task.cancel()
-        await cb.answer("⏹ To'xtatildi")
-    else:
-        await cb.answer("Hozir ishlamayapti")
-    try:
-        await cb.message.edit_text(
-            "⏹ To'xtatildi.\n\nDavom ettirish uchun ▶️ bosing.",
-            reply_markup=bosh_kb(uid)
-        )
-    except TelegramBadRequest:
-        pass
+
 
 
 # ── Bio tsikl ──────────────────────────────────────────────────────────────────
 
+async def _task_boshlash_akk(uid: int, akk_idx: int):
+    """Bitta akkount uchun bio tsikl boshlash."""
+    task = asyncio.create_task(_bio_tsikl_akk(uid, akk_idx))
+    users[uid]["accounts"][akk_idx]["task"] = task
+
+
 async def _task_boshlash(uid: int):
-    task = asyncio.create_task(_bio_tsikl(uid))
-    users[uid]["task"] = task
+    """Barcha akkountlar uchun bio tsikl boshlash."""
+    accounts = users.get(uid, {}).get("accounts", [])
+    for i, akk in enumerate(accounts):
+        old_task = akk.get("task")
+        if not old_task or old_task.done():
+            await _task_boshlash_akk(uid, i)
 
 
-async def _bio_tsikl(uid: int):
+async def _bio_tsikl_akk(uid: int, akk_idx: int):
+    """Bitta akkount uchun bio yangilash tsikli."""
     oxirgi   = None
     xato_son = 0
 
     while True:
         try:
-            ma      = users.get(uid, {})
-            client  = ma.get("client")
-            shablon = ma.get("shablon", 1)
+            accounts = users.get(uid, {}).get("accounts", [])
+            if akk_idx >= len(accounts):
+                break
+            akk     = accounts[akk_idx]
+            client  = akk.get("client")
+            shablon = akk.get("shablon", users.get(uid, {}).get("shablon", 1))
 
             if not client:
                 await asyncio.sleep(5)
@@ -454,19 +464,153 @@ async def _bio_tsikl(uid: int):
             await asyncio.sleep(1)
 
         except asyncio.CancelledError:
-            # Bio ni tozalash
             try:
-                client = users.get(uid, {}).get("client")
-                if client and client.is_connected():
-                    await client(UpdateProfileRequest(about=""))
+                accounts = users.get(uid, {}).get("accounts", [])
+                if akk_idx < len(accounts):
+                    client = accounts[akk_idx].get("client")
+                    if client and client.is_connected():
+                        await client(UpdateProfileRequest(about=""))
             except Exception:
                 pass
-            log.info("Bio tsikl to'xtatildi: uid={}".format(uid))
+            nom = users.get(uid,{}).get("accounts",[{}]*max(akk_idx+1,1))[akk_idx].get("nom","")
+            log.info("Bio tsikl to'xtatildi: uid={} akk={}({})".format(uid, akk_idx, nom))
             break
         except Exception as e:
             xato_son += 1
-            log.warning("Bio xato uid={}: {}".format(uid, e))
+            log.warning("Bio xato uid={} akk={}: {}".format(uid, akk_idx, e))
             await asyncio.sleep(min(xato_son * 3, 30))
+
+
+@dp.callback_query(F.data == "start_all")
+async def start_all(cb: CallbackQuery):
+    uid      = cb.from_user.id
+    accounts = users.get(uid, {}).get("accounts", [])
+    if not accounts:
+        return await cb.answer("Akkount yo'q!")
+    n = 0
+    for i, akk in enumerate(accounts):
+        t = akk.get("task")
+        if not t or t.done():
+            await _task_boshlash_akk(uid, i)
+            n += 1
+    await cb.answer("▶️ {} ta boshlandi!".format(n))
+    try:
+        await cb.message.edit_text(
+            "✅ {} ta akkount ishlayapti!".format(n),
+            reply_markup=bosh_kb(uid)
+        )
+    except Exception:
+        pass
+
+
+@dp.callback_query(F.data == "stop_all")
+async def stop_all(cb: CallbackQuery):
+    uid      = cb.from_user.id
+    accounts = users.get(uid, {}).get("accounts", [])
+    n = 0
+    for akk in accounts:
+        t = akk.get("task")
+        if t and not t.done():
+            t.cancel()
+            n += 1
+    await cb.answer("⏹ {} ta to'xtatildi".format(n))
+    try:
+        await cb.message.edit_text(
+            "⏹ {} ta akkount to'xtatildi.".format(n),
+            reply_markup=bosh_kb(uid)
+        )
+    except Exception:
+        pass
+
+
+@dp.callback_query(F.data == "akk_royxat")
+async def akk_royxat(cb: CallbackQuery):
+    uid      = cb.from_user.id
+    accounts = users.get(uid, {}).get("accounts", [])
+    if not accounts:
+        return await cb.answer("Akkount yo'q!")
+    rows = []
+    for i, akk in enumerate(accounts):
+        aktiv = akk.get("task") and not akk["task"].done()
+        belgi = "✅" if aktiv else "⏸"
+        nom   = akk.get("nom") or akk.get("telefon", "")
+        rows.append([("{} {}. {}".format(belgi, i+1, nom), "akk:{}".format(i))])
+    rows.append([("➕ Yangi qo'shish", "start_vc"), ("⬅️ Orqaga", "back")])
+    try:
+        await cb.message.edit_text("📋 <b>Akkountlar:</b>", reply_markup=ikb(rows), parse_mode="HTML")
+    except Exception:
+        pass
+
+
+@dp.callback_query(F.data.startswith("akk:"))
+async def akk_detail(cb: CallbackQuery):
+    uid     = cb.from_user.id
+    idx     = int(cb.data.split(":")[1])
+    accounts = users.get(uid, {}).get("accounts", [])
+    if idx >= len(accounts):
+        return await cb.answer("Topilmadi")
+    akk   = accounts[idx]
+    aktiv = akk.get("task") and not akk["task"].done()
+    nom   = akk.get("nom") or akk.get("telefon", "")
+    shablon = akk.get("shablon", 1)
+    matn = "{} <b>{}</b>\nShablon: {}\nNamuna: <code>{}</code>".format(
+        "✅" if aktiv else "⏸", nom,
+        SHABLONLAR[shablon-1][1], soat_formatlash(shablon)
+    )
+    rows = []
+    if aktiv:
+        rows.append([("⏹ To'xtatish", "akk_stop:{}".format(idx))])
+    else:
+        rows.append([("▶️ Boshlash", "akk_start:{}".format(idx))])
+    rows.append([("🗑 O'chirish", "akk_del:{}".format(idx))])
+    rows.append([("⬅️ Orqaga", "akk_royxat")])
+    try:
+        await cb.message.edit_text(matn, reply_markup=ikb(rows), parse_mode="HTML")
+    except Exception:
+        pass
+
+
+@dp.callback_query(F.data.startswith("akk_start:"))
+async def akk_start(cb: CallbackQuery):
+    uid = cb.from_user.id
+    idx = int(cb.data.split(":")[1])
+    await _task_boshlash_akk(uid, idx)
+    await cb.answer("▶️ Boshlandi!")
+    cb.data = "akk:{}".format(idx)
+    await akk_detail(cb)
+
+
+@dp.callback_query(F.data.startswith("akk_stop:"))
+async def akk_stop(cb: CallbackQuery):
+    uid      = cb.from_user.id
+    idx      = int(cb.data.split(":")[1])
+    accounts = users.get(uid, {}).get("accounts", [])
+    if idx < len(accounts):
+        t = accounts[idx].get("task")
+        if t and not t.done():
+            t.cancel()
+    await cb.answer("⏹ To'xtatildi")
+    cb.data = "akk:{}".format(idx)
+    await akk_detail(cb)
+
+
+@dp.callback_query(F.data.startswith("akk_del:"))
+async def akk_del(cb: CallbackQuery):
+    uid      = cb.from_user.id
+    idx      = int(cb.data.split(":")[1])
+    accounts = users.get(uid, {}).get("accounts", [])
+    if idx < len(accounts):
+        t = accounts[idx].get("task")
+        if t and not t.done():
+            t.cancel()
+        c = accounts[idx].get("client")
+        if c:
+            try: await c.disconnect()
+            except: pass
+        accounts.pop(idx)
+    await cb.answer("🗑 O'chirildi")
+    cb.data = "akk_royxat"
+    await akk_royxat(cb)
 
 
 # ── Health server (Render uchun) ───────────────────────────────────────────────
