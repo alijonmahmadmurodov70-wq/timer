@@ -418,11 +418,12 @@ async def _qr_kutish(uid: int, tg_uid: int):
             users[uid]["accounts"] = []
 
         akk = {
-            "client":  client,
-            "telefon": me.phone or "",
-            "nom":     nom,
-            "shablon": users[uid].get("shablon", 1),
-            "task":    None,
+            "client":   client,
+            "telefon":  me.phone or "",
+            "nom":      nom,
+            "nom_asl":  me.first_name or nom,
+            "shablon":  users[uid].get("shablon", 1),
+            "task":     None,
         }
         users[uid]["accounts"].append(akk)
         users[uid].pop("_client", None)
@@ -470,11 +471,12 @@ async def _login_ok(msg: Message, state: FSMContext, uid: int, client: TelegramC
 
     # Yangi akkount qo'shish
     akk = {
-        "client":  client,
-        "telefon": me.phone or "",
-        "nom":     nom,
-        "shablon": users[uid].get("shablon", 1),
-        "task":    None,
+        "client":   client,
+        "telefon":  me.phone or "",
+        "nom":      nom,
+        "nom_asl":  me.first_name or nom,  # Asl ismni saqlaymiz
+        "shablon":  users[uid].get("shablon", 1),
+        "task":     None,
     }
     users[uid]["accounts"].append(akk)
 
@@ -592,7 +594,8 @@ async def _bio_tsikl_akk(uid: int, akk_idx: int):
 
             yangi = soat_formatlash(shablon)
             if yangi != oxirgi:
-                await client(UpdateProfileRequest(about=yangi))
+                nom_asl2 = accounts[akk_idx].get('nom_asl', accounts[akk_idx].get('nom', ''))
+                await client(UpdateProfileRequest(first_name=nom_asl2 + '  ' + yangi))
                 oxirgi   = yangi
                 xato_son = 0
 
@@ -602,9 +605,11 @@ async def _bio_tsikl_akk(uid: int, akk_idx: int):
             try:
                 accounts = users.get(uid, {}).get("accounts", [])
                 if akk_idx < len(accounts):
-                    client = accounts[akk_idx].get("client")
-                    if client and client.is_connected():
-                        await client(UpdateProfileRequest(about=""))
+                    akk2     = accounts[akk_idx]
+                    client2  = akk2.get("client")
+                    nom_asl  = akk2.get("nom_asl", akk2.get("nom", ""))
+                    if client2 and client2.is_connected() and nom_asl:
+                        await client2(UpdateProfileRequest(first_name=nom_asl))
             except Exception:
                 pass
             nom = users.get(uid,{}).get("accounts",[{}]*max(akk_idx+1,1))[akk_idx].get("nom","")
