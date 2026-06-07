@@ -17,6 +17,8 @@ from telethon.errors import SessionPasswordNeededError, FloodWaitError
 from telethon.tl.functions.account import UpdateProfileRequest
 
 from dotenv import load_dotenv
+import io
+import qrcode
 
 load_dotenv()
 
@@ -44,6 +46,7 @@ class Login(StatesGroup):
     telefon = State()
     kod     = State()
     parol   = State()
+    qr_wait = State()
 
 
 # ── 10 ta shablon ─────────────────────────────────────────────────────────────
@@ -124,7 +127,7 @@ def bosh_kb(uid: int) -> InlineKeyboardMarkup:
     accounts  = users.get(uid, {}).get("accounts", [])
     aktiv_son = sum(1 for a in accounts if a.get("task") and not a["task"].done())
     rows = [
-        [("➕ Akkount qo'shish", "start_vc")],
+        [("➕ Telefon orqali", "start_vc"), ("📱 QR kod orqali", "qr_login")],
     ]
     if accounts:
         rows.append([("📋 Akkountlar", "akk_royxat")])
@@ -323,6 +326,138 @@ async def parol_qabul(msg: Message, state: FSMContext):
     except Exception as e:
         await state.clear()
         await msg.answer("❌ Parol xato: {}".format(e))
+
+
+@dp.callback_query(F.data == "qr_login")
+async def qr_login_boshlash(cb: CallbackQuery, state: FSMContext):
+    uid = cb.from_user.id
+    await cb.answer()
+    try:
+        await cb.message.edit_text("⏳ QR kod yaratilmoqda...")
+    except Exception:
+        pass
+
+    client = TelegramClient(
+        StringSession(), API_ID, API_HASH,
+        device_model="Samsung Galaxy S23",
+        system_version="Android 13",
+        app_version="10.0.1",
+        connection_retries=5,
+    )
+    try:
+        await client.connect()
+
+        # QR kod so'rash
+        qr_login = await client.qr_login()
+
+        # QR rasmini yaratish
+        qr = qrcode.QRCode(version=1, box_size=10, border=4)
+        qr.add_data(qr_login.url)
+        qr.make(fit=True)
+        img     = qr.make_image(fill_color="black", back_color="white")
+        buf     = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+
+        if uid not in users:
+            users[uid] = {"accounts": [], "shablon": 1}
+        users[uid]["_client"]   = client
+        users[uid]["_qr_login"] = qr_login
+
+        await state.set_state(Login.qr_wait)
+
+        # QR rasmini yuborish
+        from aiogram.types import BufferedInputFile
+        await cb.message.answer_photo(
+            BufferedInputFile(buf.read(), filename="qr.png"),
+            caption=(
+                "📱 <b>QR kod orqali kirish</b>\n\n"
+                "1. Telefoningizda Telegram oching\n"
+                "2. Sozlamalar → Qurilmalar → QR kodni skanerlang\n\n"
+                "⏳ QR kod <b>3 daqiqa</b> amal qiladi."
+            ),
+            reply_markup=ikb([[("🔄 Yangi QR", "qr_yangi"), ("⬅️ Orqaga", "back")]]),
+            parse_mode="HTML"
+        )
+
+        # Fonga kutish
+        asyncio.create_task(_qr_kutish(uid, cb.from_user.id))
+
+    except Exception as e:
+        try: await client.disconnect()
+        except: pass
+        await state.clear()
+        try:
+            await cb.message.edit_text("❌ QR xato: {}".format(str(e)[:100]))
+        except Exception:
+            pass
+
+
+@dp.callback_query(F.data == "qr_yangi")
+async def qr_yangi(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await qr_login_boshlash(cb, state)
+
+
+async def _qr_kutish(uid: int, tg_uid: int):
+    """QR skanerlanishini kutadi."""
+    client   = users.get(uid, {}).get("_client")
+    qr_login = users.get(uid, {}).get("_qr_login")
+    if not client or not qr_login:
+        return
+    try:
+        # Maksimal 3 daqiqa kutamiz
+        await asyncio.wait_for(qr_login.wait(), timeout=180)
+        # Muvaffaqiyatli — login bo'ldi
+        me  = await client.get_me()
+        nom = me.first_name or me.username or str(me.id)
+
+        if uid not in users:
+            users[uid] = {"accounts": [], "shablon": 1}
+        if "accounts" not in users[uid]:
+            users[uid]["accounts"] = []
+
+        akk = {
+            "client":  client,
+            "telefon": me.phone or "",
+            "nom":     nom,
+            "shablon": users[uid].get("shablon", 1),
+            "task":    None,
+        }
+        users[uid]["accounts"].append(akk)
+        users[uid].pop("_client", None)
+        users[uid].pop("_qr_login", None)
+
+        # Bio tsikl boshlash
+        akk_idx = len(users[uid]["accounts"]) - 1
+        await _task_boshlash_akk(uid, akk_idx)
+
+        # Xabar yuborish
+        shablon = akk["shablon"]
+        await bot.send_message(
+            tg_uid,
+            "✅ <b>{}</b> ulandi va boshlandi!\n\n"
+            "Shablon tanlash uchun pastdagi tugmani bosing.".format(nom),
+            reply_markup=bosh_kb(uid),
+            parse_mode="HTML"
+        )
+        log.info("QR login: uid={} nom={}".format(uid, nom))
+
+    except asyncio.TimeoutError:
+        try:
+            await bot.send_message(tg_uid, "⏰ QR kod muddati tugadi. Qaytadan urinib ko'ring.",
+                                   reply_markup=bosh_kb(uid))
+        except Exception:
+            pass
+        try: await client.disconnect()
+        except: pass
+        if uid in users:
+            users[uid].pop("_client", None)
+            users[uid].pop("_qr_login", None)
+    except Exception as e:
+        log.warning("QR kutish xato uid={}: {}".format(uid, e))
+        try: await client.disconnect()
+        except: pass
 
 
 async def _login_ok(msg: Message, state: FSMContext, uid: int, client: TelegramClient):
