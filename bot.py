@@ -232,15 +232,47 @@ async def telefon_qabul(msg: Message, state: FSMContext):
         return await msg.answer("❌ Format: +998901234567")
 
     await msg.answer("⏳ Kod yuborilmoqda...")
-    client = TelegramClient(
-        StringSession(), API_ID, API_HASH,
-        device_model="Samsung Galaxy S23",
-        system_version="Android 13",
-        app_version="10.0.1",
-        connection_retries=5,
-        retry_delay=2,
-        request_retries=5,
-    )
+    # MTProxy — Render serveridan Telegram ga ulanish uchun
+    # Bir nechta ishonchli MTProxy serverlar
+    PROXIES = [
+        ("mtproto", "mtproxy.co", 443, "secret"),
+        None,  # Proxy-siz ham urinib ko'ramiz
+    ]
+
+    client = None
+    for proxy in PROXIES:
+        try:
+            if proxy:
+                from telethon.network.connection import ConnectionTcpMTProxyRandomizedIntermediate
+                c = TelegramClient(
+                    StringSession(), API_ID, API_HASH,
+                    connection=ConnectionTcpMTProxyRandomizedIntermediate,
+                    proxy=proxy,
+                    device_model="Samsung Galaxy S23",
+                    system_version="Android 13",
+                    app_version="10.0.1",
+                    connection_retries=3,
+                )
+            else:
+                c = TelegramClient(
+                    StringSession(), API_ID, API_HASH,
+                    device_model="Samsung Galaxy S23",
+                    system_version="Android 13",
+                    app_version="10.0.1",
+                    connection_retries=3,
+                )
+            await c.connect()
+            client = c
+            break
+        except Exception:
+            try: await c.disconnect()
+            except: pass
+            continue
+
+    if not client:
+        await state.clear()
+        await msg.answer("❌ Ulanib bo'lmadi. Keyinroq urinib ko'ring.")
+        return
     try:
         await client.connect()
         natija = await client.send_code_request(telefon)
